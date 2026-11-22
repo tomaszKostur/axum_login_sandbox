@@ -1,0 +1,12 @@
+[package]
+name = "auth_example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+axum-login = "0.18"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+
+tower-sessions = { version = "0.14", features = ["memory-store"] }
