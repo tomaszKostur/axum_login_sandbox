@@ -144,6 +144,10 @@ async fn protected() -> &'static str {
     "Gotta be logged in to see me!"
 }
 
+async fn protected2() -> &'static str {
+    "another protected route"
+}
+
 // ----------------------
 // MAIN
 // ----------------------
@@ -179,6 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Router
     let app = Router::new()
         .route("/protected", get(protected))
+        .route("/protected2", get(protected2))
         .route_layer(
             login_required!(Backend, login_url = "/login")
         )
@@ -256,5 +261,197 @@ mod tests {
 
         assert!(response.0.contains("<form"));
         assert!(response.0.contains("user_id"));
+    }
+
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Method, Request, StatusCode},
+    };
+
+    use tower::ServiceExt;
+
+    // Build a Router specifically for testing
+    fn test_app() -> Router {
+        let mut users = HashMap::new();
+
+        users.insert(
+            1,
+            User {
+                id: 1,
+                pw_hash: b"test-hash".to_vec(),
+            },
+        );
+
+        let backend = Backend { users };
+
+        let session_store = MemoryStore::default();
+
+        let session_layer =
+            SessionManagerLayer::new(session_store)
+                .with_secure(false);
+
+        let auth_layer =
+            AuthManagerLayerBuilder::new(backend, session_layer)
+                .build();
+
+        Router::new()
+            .route("/protected", get(protected))
+            .route_layer(
+                login_required!(Backend, login_url = "/login")
+            )
+            .route("/login", get(login_page).post(login))
+            .layer(auth_layer)
+    }
+
+    // --------------------------
+    // TEST 1: GET /login
+    // --------------------------
+
+    #[tokio::test]
+    async fn test_login_page_routes() {
+        let app = test_app();
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/login")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+
+        let html = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(html.contains("<form"));
+        assert!(html.contains("user_id"));
+    }
+
+    // --------------------------
+    // TEST 2: PROTECTED WITHOUT LOGIN
+    // --------------------------
+
+    #[tokio::test]
+    async fn test_protected_without_login_routes() {
+        let app = test_app();
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/protected")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert!(response.status().is_redirection());
+
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(location.starts_with("/login"));
+    }
+
+    // --------------------------
+    // TEST 3: INVALID LOGIN
+    // --------------------------
+
+    #[tokio::test]
+    async fn test_invalid_login_routes() {
+        let app = test_app();
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/login")
+            .header(
+                header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(Body::from("user_id=999"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // --------------------------
+    // TEST 4: LOGIN + ACCESS PROTECTED
+    // --------------------------
+
+    #[tokio::test]
+    async fn test_login_and_access_protected_routes() {
+        let app = test_app();
+
+        // Step 1: Login
+        let login_request = Request::builder()
+            .method(Method::POST)
+            .uri("/login")
+            .header(
+                header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(Body::from("user_id=1"))
+            .unwrap();
+
+        let login_response = app
+            .clone()
+            .oneshot(login_request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            login_response.status(),
+            StatusCode::SEE_OTHER
+        );
+
+        // Step 2: Extract session cookie
+        let cookie = login_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("Missing session cookie")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        // Step 3: Access protected route
+        let protected_request = Request::builder()
+            .method(Method::GET)
+            .uri("/protected")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app
+            .oneshot(protected_request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Step 4: Verify response body
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+
+        let text = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(
+            text,
+            "Gotta be logged in to see me!"
+        );
     }
 }

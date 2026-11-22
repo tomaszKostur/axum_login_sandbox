@@ -10,3 +10,6 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 
 tower-sessions = { version = "0.14", features = ["memory-store"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

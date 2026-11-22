@@ -27,6 +27,7 @@ dependencies = [
  "axum-login",
  "serde",
  "tokio",
+ "tower",
  "tower-sessions",
 ]
 
