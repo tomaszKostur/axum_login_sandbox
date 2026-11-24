@@ -5,11 +5,12 @@ edition = "2021"
 
 [dependencies]
 axum = "0.8"
-axum-login = "0.18"
+axum-login = "0.19"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 
-tower-sessions = { version = "0.14", features = ["memory-store"] }
+tower-sessions = { version = "0.15", features = ["memory-store"] }
+thiserror = "2.0.21"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

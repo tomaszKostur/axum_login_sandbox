@@ -11,14 +11,13 @@ use axum::{
 
 use axum_login::{
     login_required,
+    require::{RedirectHandler, Require},
     tower_sessions::{MemoryStore, SessionManagerLayer},
-    AuthManagerLayerBuilder,
-    AuthUser,
-    AuthnBackend,
-    UserId,
+    AuthManagerLayerBuilder, AuthUser, AuthnBackend, UserId,
 };
 
 use serde::Deserialize;
+use thiserror::Error;
 
 // ----------------------
 // USER
@@ -51,6 +50,15 @@ struct Backend {
     users: HashMap<i64, User>,
 }
 
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("Any other error case")]
+    AppDevError,
+
+    #[error("Invalid Credentials")]
+    PasswordError,
+}
+
 // ----------------------
 // CREDENTIALS
 // ----------------------
@@ -58,6 +66,7 @@ struct Backend {
 #[derive(Clone, Deserialize)]
 struct Credentials {
     user_id: i64,
+    password: String,
 }
 
 // ----------------------
@@ -67,19 +76,20 @@ struct Credentials {
 impl AuthnBackend for Backend {
     type User = User;
     type Credentials = Credentials;
-    type Error = Infallible;
+    type Error = AppError;
 
     async fn authenticate(
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-        Ok(self.users.get(&creds.user_id).cloned())
+        if &creds.password == "huehue" {
+            Ok(self.users.get(&creds.user_id).cloned())
+        } else {
+            Ok(None)
+        }
     }
 
-    async fn get_user(
-        &self,
-        user_id: &UserId<Self>,
-    ) -> Result<Option<Self::User>, Self::Error> {
+    async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
         Ok(self.users.get(user_id).cloned())
     }
 }
@@ -103,6 +113,12 @@ async fn login_page() -> Html<&'static str> {
                         placeholder="User ID"
                         required
                     />
+                    <input
+                        type="text"
+                        name="password"
+                        placeholder="password"
+                        required
+                    />
                     <button type="submit">Login</button>
                 </form>
             </body>
@@ -115,10 +131,7 @@ async fn login_page() -> Html<&'static str> {
 // LOGIN HANDLER
 // ----------------------
 
-async fn login(
-    mut auth_session: AuthSession,
-    Form(creds): Form<Credentials>,
-) -> impl IntoResponse {
+async fn login(mut auth_session: AuthSession, Form(creds): Form<Credentials>) -> impl IntoResponse {
     let user = match auth_session.authenticate(creds).await {
         Ok(Some(user)) => user,
         Ok(None) => {
@@ -171,27 +184,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_store = MemoryStore::default();
 
     // HTTP only for local development
-    let session_layer =
-        SessionManagerLayer::new(session_store)
-            .with_secure(false);
+    let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     // Authentication middleware
-    let auth_layer =
-        AuthManagerLayerBuilder::new(backend, session_layer)
-            .build();
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    // let require_login_layer = login_required!(Backend, login_url = "/login");
+
+    // INFO: IMO this explicit syntax is much better
+    let require_login_layer = Require::<Backend>::builder()
+        .unauthenticated(RedirectHandler::new().login_url("/login"))
+        .build();
 
     // Router
     let app = Router::new()
         .route("/protected", get(protected))
         .route("/protected2", get(protected2))
-        .route_layer(
-            login_required!(Backend, login_url = "/login")
-        )
+        .route_layer(require_login_layer)
         .route("/login", get(login_page).post(login))
         .layer(auth_layer);
 
-    let listener =
-        tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
 
     println!("Server running at http://127.0.0.1:3000");
 
@@ -286,19 +299,13 @@ mod tests {
 
         let session_store = MemoryStore::default();
 
-        let session_layer =
-            SessionManagerLayer::new(session_store)
-                .with_secure(false);
+        let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-        let auth_layer =
-            AuthManagerLayerBuilder::new(backend, session_layer)
-                .build();
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         Router::new()
             .route("/protected", get(protected))
-            .route_layer(
-                login_required!(Backend, login_url = "/login")
-            )
+            .route_layer(login_required!(Backend, login_url = "/login"))
             .route("/login", get(login_page).post(login))
             .layer(auth_layer)
     }
@@ -321,9 +328,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
 
         let html = String::from_utf8(body.to_vec()).unwrap();
 
@@ -370,19 +375,13 @@ mod tests {
         let request = Request::builder()
             .method(Method::POST)
             .uri("/login")
-            .header(
-                header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from("user_id=999"))
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
-        assert_eq!(
-            response.status(),
-            StatusCode::UNAUTHORIZED
-        );
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     // --------------------------
@@ -397,23 +396,13 @@ mod tests {
         let login_request = Request::builder()
             .method(Method::POST)
             .uri("/login")
-            .header(
-                header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from("user_id=1"))
             .unwrap();
 
-        let login_response = app
-            .clone()
-            .oneshot(login_request)
-            .await
-            .unwrap();
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
 
-        assert_eq!(
-            login_response.status(),
-            StatusCode::SEE_OTHER
-        );
+        assert_eq!(login_response.status(), StatusCode::SEE_OTHER);
 
         // Step 2: Extract session cookie
         let cookie = login_response
@@ -435,23 +424,15 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app
-            .oneshot(protected_request)
-            .await
-            .unwrap();
+        let response = app.oneshot(protected_request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
         // Step 4: Verify response body
-        let body = to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
 
         let text = String::from_utf8(body.to_vec()).unwrap();
 
-        assert_eq!(
-            text,
-            "Gotta be logged in to see me!"
-        );
+        assert_eq!(text, "Gotta be logged in to see me!");
     }
 }
